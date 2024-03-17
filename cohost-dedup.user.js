@@ -1,18 +1,42 @@
 // ==UserScript==
 // @name Cohost Dedup
-// @namespace https://nex-3.com
-// @version 1.4
-// @description Deduplicate posts you've already seen on Cohost
+// @namespace https://morine.net
+// @version 1.4.1
+// @description Deduplicate posts and mark posts you've already seen on Cohost, plus add tenpo ko timestamps
 // @author Natalie Weizenbaum
+// @author Mori
+// @author @two
 // @match https://cohost.org/*
 // @match https://*.cohost.org/*
+// @updateURL https://github.com/remorae/cohost-dedup/raw/main/cohost-dedup.user.js
+// @downloadURL https://github.com/remorae/cohost-dedup/raw/main/cohost-dedup.user.js
 // @exclude https://cohost.org/*/post/*
 // @exclude https://cohost.org/rc/search
 // @exclude https://cohost.org/rc/project/*
 // @exclude https://cohost.org/rc/user/*
 // @exclude https://cohost.org/rc/posts/unpublished*
-// @exclude https://cohost.org/rc/liked-posts
 // ==/UserScript==
+
+// Changelog
+//   v1.4.1 (Mori)
+//     Additions:
+//       .-cohost-dedup-read-chost-indicator {...}
+//       markChostRead(chost) {...}
+//       addTenpoKo(chost) {...} - see https://cohost.org/two/post/751520-introducing-tenpo-k
+//       LocalStoreSet
+//       storageAvailable
+//     Changes:
+//       checkThread:
+//         Add a checkmark to the upper-left corner of chosts if they aren't hidden but they've been seen before in the current session
+//       observer:
+//         Prevent errors due to undefined node.dataset/node.querySelectorAll
+//   v1.4
+//     See https://github.com/nex3/cohost-dedup/commit/aeef8fe5d7e315e56e606e16c59e0ca2a250a2ef
+
+// To turn off the script on the pages you own (it messes with things you've shared), edit/add these lines within the ==UserScript== section above
+// (or add them to your user excludes in Tampermonkey):
+// @exclude https://cohost.org/your_page_here
+// @exclude https://cohost.org/your_other_page_here
 
 // Should be compatible with Firefox (desktop and mobile) and Chrome. To use,
 // install Tampermonkey from https://www.tampermonkey.net/, then visit
@@ -39,6 +63,12 @@ style.innerText = `
     position: relative;
     overflow: hidden;
     margin-bottom: -${hiddenChostsHeight};
+  }
+
+  .-cohost-dedup-read-chost-indicator {
+    display: block;
+    position: relative;
+    overflow: hidden;
   }
 
   .-cohost-dedup-hidden-chost.-cohost-dedup-last > :not(div:not(.flex)) {
@@ -134,6 +164,42 @@ function hideChost(chost) {
   }
 }
 
+function markChostRead(chost) {
+  if (chost.parentNode.querySelector('.-cohost-dedup-read-chost-indicator')) {
+      return;
+  }
+  const span = document.createElement("span");
+  span.classList.add('-cohost-dedup-read-chost-indicator');
+  span.innerHTML = "✓";
+  chost.before(span);
+}
+
+class LocalStoreSet {
+  constructor(name) {
+    this.name = name;
+  }
+
+  has(value) {
+    return this.set.has(value);
+  }
+
+  add(value) {
+    this.set.add(value);
+    localStorage.setItem(this.name, JSON.stringify([...this.set]));
+  }
+
+  load() {
+    const stored = localStorage.getItem(this.name);
+    this.set = stored === null ? new Set() : new Set(JSON.parse(stored));
+    if (stored) {
+      const len = ((stored.length || 0) + (this.name.length || 0)) * 2;
+      const kb = (len / 1024).toFixed(2);
+      console.log("Loaded " + this.name + ": " + kb + " KB");
+    }
+        '-cohost-dedup-hidden-thread');
+  }
+}
+
 class SessionStoreSet {
   constructor(name) {
     this.name = name;
@@ -151,9 +217,63 @@ class SessionStoreSet {
   }
 }
 
-const seenChostIds = new SessionStoreSet('-cohost-dedup-seen-chost-ids');
-const shownChostFullIds =
-    new SessionStoreSet('-cohost-dedup-shown-chost-full-ids');
+function storageAvailable(type) {
+  let storage;
+  try {
+    storage = window[type];
+    const x = "__storage_test__";
+    storage.setItem(x, x);
+    storage.removeItem(x);
+    return true;
+  } catch (e) {
+    return (
+      e instanceof DOMException &&
+      // everything except Firefox
+      (e.code === 22 ||
+        // Firefox
+        e.code === 1014 ||
+        // test name field too, because code might not be present
+        // everything except Firefox
+        e.name === "QuotaExceededError" ||
+        // Firefox
+        e.name === "NS_ERROR_DOM_QUOTA_REACHED") &&
+      // acknowledge QuotaExceededError only if there's something already stored
+      storage &&
+      storage.length !== 0
+    );
+  }
+}
+
+function getTimestamps(thread) {
+  return thread.querySelectorAll(":scope > article > header > div > time");
+}
+
+function addTenpoKo(ele) {
+  let thetimestamp = new Date(ele.dateTime);
+  //this is how you're meant to do it right?
+  let thehours = thetimestamp.getUTCHours();
+  const span = document.createElement("span");
+  span.classList.add('tenpo-ko-emoji');
+  if (thehours < 6) {
+    span.innerHTML = "🔥";
+  } else if (thehours < 12) {
+    span.innerHTML = "☁";
+  } else if (thehours < 18) {
+    span.innerHTML = "💧";
+  } else if (thehours < 24) {
+    //redundant check but avoids adding 🌱 when something goes wrong
+    span.innerHTML = "🌱";
+  }
+  ele.after(span);
+}
+
+const useLocal = storageAvailable("localStorage");
+const seenChostIds = (useLocal)
+  ? new LocalStoreSet('-cohost-dedup-seen-chost-ids')
+  : new SessionStoreSet('-cohost-dedup-seen-chost-ids');
+const shownChostFullIds = (useLocal)
+  ? new LocalStoreSet('-cohost-dedup-shown-chost-full-ids')
+  : new SessionStoreSet('-cohost-dedup-shown-chost-full-ids');
 function checkThread(thread) {
   const threadId = thread.dataset.testid;
   if (!threadId) return;
@@ -162,7 +282,9 @@ function checkThread(thread) {
   for (const chost of getChosts(thread)) {
     const id = getChostLink(chost);
     const fullId = `${threadId} // ${id}`;
-    if (seenChostIds.has(id) && !shownChostFullIds.has(fullId)) {
+    if (seenChostIds.has(id) && shownChostFullIds.has(fullId)) {
+      markChostRead(chost);
+    } else if (seenChostIds.has(id) && !shownChostFullIds.has(fullId)) {
       console.log(`Hiding chost ${id}`);
       hideChost(chost);
     } else {
@@ -170,15 +292,24 @@ function checkThread(thread) {
       shownChostFullIds.add(fullId);
     }
   }
+  for (const timestamp of getTimestamps(thread)) {
+    addTenpoKo(timestamp);
+  }
 }
 
 const observer = new MutationObserver(mutations => {
   for (const mutation of mutations) {
     for (const node of mutation.addedNodes) {
       if (!(node instanceof Element)) continue;
+      if (!node.dataset) {
+        continue;
+      }
       if (node.dataset.view === 'post-preview') {
         checkThread(node);
       } else {
+        if (node.childNodes.length === 0) {
+          continue;
+        }
         for (const thread of
             node.querySelectorAll('[data-view=post-preview]')) {
           checkThread(thread);
@@ -188,4 +319,20 @@ const observer = new MutationObserver(mutations => {
   }
 });
 
-observer.observe(document.body, {subtree: true, childList: true});
+function reload(context) {
+  if (useLocal) {
+    console.log("Reloading (" + context + ")...");
+    seenChostIds.load();
+    shownChostFullIds.load();
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden) {
+      reload("visibilitychange, shown");
+  }
+});
+window.addEventListener("load", () => {
+  reload("load");
+  observer.observe(document.body, {subtree: true, childList: true});
+});
