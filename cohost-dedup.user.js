@@ -196,7 +196,6 @@ class LocalStoreSet {
       const kb = (len / 1024).toFixed(2);
       console.log("Loaded " + this.name + ": " + kb + " KB");
     }
-        '-cohost-dedup-hidden-thread');
   }
 }
 
